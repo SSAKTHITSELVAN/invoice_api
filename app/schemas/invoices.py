@@ -7,7 +7,8 @@ from typing import List, Optional
 from app.schemas.common import APIResponse
 from app.schemas.companies import CompanyOut # Assuming this exists for relationship output
 from app.schemas.customers import CustomerOut # Assuming this exists for relationship output
-from app.schemas.invoice_items import InvoiceItemOut # New schema for invoice items output
+from app.schemas.products import ProductOut # ADD THIS IMPORT
+from app.schemas.invoice_items import InvoiceItemOut # New schema for invoice items output (this will be updated)
 
 # Schema for creating invoice items within an invoice
 class InvoiceItemInput(BaseModel):
@@ -48,7 +49,7 @@ class UpdateInvoice(BaseModel):
         from_attributes = True
 
 # Output schema for a single invoice item (including calculated fields)
-class InvoiceItemOut(BaseModel):
+class InvoiceItemOut(BaseModel): # This InvoiceItemOut needs to be updated.
     invoice_item_id: str # Changed to str for UUID
     invoice_id: str # Changed to str for UUID
     product_id: str # Changed to str for UUID
@@ -64,7 +65,7 @@ class InvoiceItemOut(BaseModel):
     invoice_item_igst_amount: float # Added for IGST amount
     invoice_item_total_amount: float
     created_at: datetime
-    # product: Optional[ProductOut] = None # Assuming ProductOut schema exists in app.schemas.products
+    product: Optional[ProductOut] = None # UNCOMMENT THIS LINE
 
     class Config:
         from_attributes = True

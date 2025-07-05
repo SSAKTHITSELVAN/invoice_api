@@ -1,9 +1,9 @@
 # app/models/companies.py
-from sqlalchemy import Column, String, Text, ForeignKey, DateTime, func
+from sqlalchemy import Column, String, Text, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime
+import uuid # Import uuid
 from app.database import Base
-import uuid
 
 class Companies(Base):
     """model to represent the companies under a user"""
@@ -21,20 +21,13 @@ class Companies(Base):
     company_account_holder = Column(String, nullable=False)
     company_branch = Column(String, nullable=False)
     company_ifsc_code = Column(String, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    # Relationships
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationship with Users, Customers
     owner = relationship("Users", back_populates='companies')
     customers = relationship("Customers", back_populates='customer_of', lazy='selectin')
-    products = relationship('Products', back_populates='product_by')
-
-    # Relationship for invoices where this company is the owner
-    invoices_owned = relationship(
-        'Invoices',
-        back_populates='owner_company_rel',
-        foreign_keys="[Invoices.owner_company]", # Explicitly state the foreign key
-        cascade="all, delete-orphan"
-    )
-    # Removed invoices_received:
-    # This relationship is not needed here because Invoices.customer_company
-    # points to Customers.customer_id, not Companies.company_id.
-    # Invoices received by a company are conceptually linked via its Customers.
+    products = relationship('Products', back_populates='product_by', lazy='selectin', cascade="all, delete-orphan")
+    invoices_owned = relationship('Invoices', back_populates='owner_company_rel', lazy='selectin', cascade="all, delete-orphan")
+    
+    # REMOVE THIS LINE: This relationship is causing the error due to conflicting back_populates
+    # invoices_as_customer = relationship('Invoices', back_populates='client', lazy='selectin')

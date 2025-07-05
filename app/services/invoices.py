@@ -31,11 +31,13 @@ async def create_invoice_with_items(
     Create an invoice with associated items, auto-calculating totals,
     and ensuring the invoice belongs to the current user's company.
     """
-    invoice_data = invoice_data_with_items.invoice_data
+    # CORRECTED LINE: Use invoice_data_with_items directly as the invoice data
+    # Removed: invoice_data = invoice_data_with_items.invoice_data
     invoice_items_input = invoice_data_with_items.invoice_items
 
     # 1. Verify owner_company matches current_company
-    if invoice_data.owner_company != current_company.company_id:
+    # CORRECTED LINE: Use invoice_data_with_items for owner_company
+    if invoice_data_with_items.owner_company != current_company.company_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only create invoices for your own company."
@@ -44,7 +46,8 @@ async def create_invoice_with_items(
     # 2. Verify that the customer company exists and belongs to the current company's context (if applicable)
     # Assuming customers can be shared or linked to a company, or that this check is sufficient
     customer_result = await db.execute(
-        select(Customers).where(Customers.customer_id == invoice_data.customer_company)
+        # CORRECTED LINE: Use invoice_data_with_items for customer_company
+        select(Customers).where(Customers.customer_id == invoice_data_with_items.customer_company)
     )
     customer = customer_result.scalar_one_or_none()
     if not customer:
@@ -58,7 +61,8 @@ async def create_invoice_with_items(
 
 
     # Prepare invoice data
-    invoice_dict = invoice_data.model_dump()
+    # CORRECTED LINE: Use invoice_data_with_items directly for dict
+    invoice_dict = invoice_data_with_items.dict(exclude={'invoice_items'}) # Exclude the nested items
     invoice_dict['invoice_date'] = _to_naive_datetime(invoice_dict.get('invoice_date'))
     invoice_dict['invoice_due_date'] = _to_naive_datetime(invoice_dict.get('invoice_due_date'))
 
@@ -141,9 +145,9 @@ async def create_invoice_with_items(
         await db.execute(
             select(Invoices)
             .options(
-                selectinload(Invoices.invoice_by),
+                selectinload(Invoices.owner_company_rel),
                 selectinload(Invoices.client),
-                selectinload(Invoices.products).selectinload(InvoiceItems.product)
+                selectinload(Invoices.invoice_items).selectinload(InvoiceItems.product)
             )
             .where(Invoices.invoice_id == new_invoice.invoice_id)
         )
@@ -167,9 +171,9 @@ async def show_all_invoices(db: AsyncSession, current_company: Companies) -> Lis
     result = await db.execute(
         select(Invoices)
         .options(
-            selectinload(Invoices.invoice_by),
+            selectinload(Invoices.owner_company_rel),
             selectinload(Invoices.client),
-            selectinload(Invoices.products).selectinload(InvoiceItems.product)
+            selectinload(Invoices.invoice_items).selectinload(InvoiceItems.product)
         )
         .where(
             or_(
@@ -192,9 +196,9 @@ async def get_invoice_by_id(
     result = await db.execute(
         select(Invoices)
         .options(
-            selectinload(Invoices.invoice_by),
+            selectinload(Invoices.owner_company_rel),
             selectinload(Invoices.client),
-            selectinload(Invoices.products).selectinload(InvoiceItems.product)
+            selectinload(Invoices.invoice_items).selectinload(InvoiceItems.product)
         )
         .where(
             Invoices.invoice_id == invoice_id,
@@ -224,7 +228,7 @@ async def update_invoice_details(
     """
     invoice = await get_invoice_by_id(invoice_id, db, current_company) # Re-use check
 
-    update_data = updated_details.model_dump(exclude_unset=True)
+    update_data = updated_details.dict(exclude_unset=True)
 
     # Convert timezone-aware datetimes to naive datetimes for updates
     if 'invoice_date' in update_data:
@@ -242,9 +246,9 @@ async def update_invoice_details(
         await db.execute(
             select(Invoices)
             .options(
-                selectinload(Invoices.invoice_by),
+                selectinload(Invoices.owner_company_rel),
                 selectinload(Invoices.client),
-                selectinload(Invoices.products).selectinload(InvoiceItems.product)
+                selectinload(Invoices.invoice_items).selectinload(InvoiceItems.product)
             )
             .where(Invoices.invoice_id == invoice.invoice_id)
         )
@@ -303,9 +307,9 @@ async def get_invoices_by_specific_company_role(
     result = await db.execute(
         select(Invoices)
         .options(
-            selectinload(Invoices.invoice_by),
+            selectinload(Invoices.owner_company_rel),
             selectinload(Invoices.client),
-            selectinload(Invoices.products).selectinload(InvoiceItems.product)
+            selectinload(Invoices.invoice_items).selectinload(InvoiceItems.product)
         )
         .where(query_clause)
     )

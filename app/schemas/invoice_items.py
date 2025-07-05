@@ -1,4 +1,4 @@
-# app/schemas/invoice_items.py (If kept separate)
+# app/schemas/invoice_items.py
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
@@ -22,7 +22,7 @@ class InvoiceItemOut(BaseModel):
     invoice_item_igst_amount: float # Added for IGST amount
     invoice_item_total_amount: float
     created_at: datetime
-    product: Optional[ProductOut] = None
+    product: Optional[ProductOut] = None # UNCOMMENT THIS LINE
 
     class Config:
         from_attributes = True

@@ -38,7 +38,7 @@ async def create_invoice_endpoint(
 
     # Prepare InvoiceItemOut objects for the response
     products_out_list = []
-    for item in new_invoice.products:
+    for item in new_invoice.invoice_items: # Corrected from .products
         item_base_total = item.product.product_unit_price * item.invoice_item_quantity
         item_cgst_amount = item_base_total * (item.invoice_item_cgst_rate / 100)
         item_sgst_amount = item_base_total * (item.invoice_item_sgst_rate / 100)
@@ -84,8 +84,8 @@ async def create_invoice_endpoint(
             invoice_total_igst=new_invoice.invoice_total_igst,
             invoice_total=new_invoice.invoice_total,
             created_at=new_invoice.created_at,
-            invoice_by=new_invoice.invoice_by, # Assuming this relationship is loaded
-            client=new_invoice.client,       # Assuming this relationship is loaded
+            invoice_by=new_invoice.owner_company_rel, # Corrected
+            client=new_invoice.client,
             products=products_out_list
         )
     )
@@ -104,7 +104,7 @@ async def get_all_invoices_endpoint(
     invoices_out_list = []
     for invoice in invoices:
         products_out_list = []
-        for item in invoice.products:
+        for item in invoice.invoice_items:
             item_base_total = item.product.product_unit_price * item.invoice_item_quantity
             item_cgst_amount = item_base_total * (item.invoice_item_cgst_rate / 100)
             item_sgst_amount = item_base_total * (item.invoice_item_sgst_rate / 100)
@@ -147,7 +147,7 @@ async def get_all_invoices_endpoint(
                 invoice_total_igst=invoice.invoice_total_igst,
                 invoice_total=invoice.invoice_total,
                 created_at=invoice.created_at,
-                invoice_by=invoice.invoice_by,
+                invoice_by=invoice.owner_company_rel, # Corrected
                 client=invoice.client,
                 products=products_out_list
             )
@@ -170,7 +170,7 @@ async def get_invoice_endpoint(
     invoice = await invoice_service.get_invoice_by_id(invoice_id, db, current_company)
 
     products_out_list = []
-    for item in invoice.products:
+    for item in invoice.invoice_items:
         item_base_total = item.product.product_unit_price * item.invoice_item_quantity
         item_cgst_amount = item_base_total * (item.invoice_item_cgst_rate / 100)
         item_sgst_amount = item_base_total * (item.invoice_item_sgst_rate / 100)
@@ -216,7 +216,7 @@ async def get_invoice_endpoint(
             invoice_total_igst=invoice.invoice_total_igst,
             invoice_total=invoice.invoice_total,
             created_at=invoice.created_at,
-            invoice_by=invoice.invoice_by,
+            invoice_by=invoice.owner_company_rel, # Corrected
             client=invoice.client,
             products=products_out_list
         )
@@ -236,7 +236,7 @@ async def update_invoice_endpoint(
     )
 
     products_out_list = []
-    for item in invoice.products:
+    for item in invoice.invoice_items:
         item_base_total = item.product.product_unit_price * item.invoice_item_quantity
         item_cgst_amount = item_base_total * (item.invoice_item_cgst_rate / 100)
         item_sgst_amount = item_base_total * (item.invoice_item_sgst_rate / 100)
@@ -282,7 +282,7 @@ async def update_invoice_endpoint(
             invoice_total_igst=invoice.invoice_total_igst,
             invoice_total=invoice.invoice_total,
             created_at=invoice.created_at,
-            invoice_by=invoice.invoice_by,
+            invoice_by=invoice.owner_company_rel, # Corrected
             client=invoice.client,
             products=products_out_list
         )
@@ -321,7 +321,7 @@ async def get_invoices_by_owner_company_endpoint(
     invoices_out_list = []
     for invoice in invoices:
         products_out_list = []
-        for item in invoice.products:
+        for item in invoice.invoice_items:
             item_base_total = item.product.product_unit_price * item.invoice_item_quantity
             item_cgst_amount = item_base_total * (item.invoice_item_cgst_rate / 100)
             item_sgst_amount = item_base_total * (item.invoice_item_sgst_rate / 100)
@@ -364,7 +364,7 @@ async def get_invoices_by_owner_company_endpoint(
                 invoice_total_igst=invoice.invoice_total_igst,
                 invoice_total=invoice.invoice_total,
                 created_at=invoice.created_at,
-                invoice_by=invoice.invoice_by,
+                invoice_by=invoice.owner_company_rel, # Corrected
                 client=invoice.client,
                 products=products_out_list
             )
@@ -401,7 +401,7 @@ async def get_invoices_by_customer_company_endpoint(
     invoices_out_list = []
     for invoice in invoices:
         products_out_list = []
-        for item in invoice.products:
+        for item in invoice.invoice_items:
             item_base_total = item.product.product_unit_price * item.invoice_item_quantity
             item_cgst_amount = item_base_total * (item.invoice_item_cgst_rate / 100)
             item_sgst_amount = item_base_total * (item.invoice_item_sgst_rate / 100)
@@ -444,7 +444,7 @@ async def get_invoices_by_customer_company_endpoint(
                 invoice_total_igst=invoice.invoice_total_igst,
                 invoice_total=invoice.invoice_total,
                 created_at=invoice.created_at,
-                invoice_by=invoice.invoice_by,
+                invoice_by=invoice.owner_company_rel, # Corrected
                 client=invoice.client,
                 products=products_out_list
             )
