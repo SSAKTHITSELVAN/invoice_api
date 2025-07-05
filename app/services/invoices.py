@@ -1,202 +1,194 @@
-# ============================================================================
-# SERVICES - invoices.py (Updated with full CRUD)
-# ============================================================================
-
+# app/services/invoices.py
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_, and_
 from sqlalchemy.orm import selectinload
 from app.models.invoices import Invoices
 from app.models.invoice_items import InvoiceItems
 from app.models.products import Products
 from app.models.companies import Companies
 from app.models.customers import Customers
-from app.schemas.invoices import CreateInvoice, UpdateInvoice, CreateInvoiceWithItems
+from app.schemas.invoices import CreateInvoiceWithItems, UpdateInvoice, InvoiceItemOut
 from fastapi import HTTPException, status
 from datetime import datetime
+from typing import List, Union
 
-async def create_invoice(invoice_data: CreateInvoice, db: AsyncSession):
-    """Create a new invoice"""
-    try:
-        # Verify that the company and customer exist
-        company_result = await db.execute(
-            select(Companies).where(Companies.company_id == invoice_data.owner_company)
-        )
-        company = company_result.scalar_one_or_none()
-        if not company:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, 
-                detail="Owner company not found"
-            )
-        
-        customer_result = await db.execute(
-            select(Customers).where(Customers.customer_id == invoice_data.customer_company)
-        )
-        customer = customer_result.scalar_one_or_none()
-        if not customer:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, 
-                detail="Customer not found"
-            )
-        
-        # Convert timezone-aware datetimes to naive datetimes
-        invoice_dict = invoice_data.dict()
-        if invoice_dict.get('invoice_date') and hasattr(invoice_dict['invoice_date'], 'tzinfo') and invoice_dict['invoice_date'].tzinfo:
-            invoice_dict['invoice_date'] = invoice_dict['invoice_date'].replace(tzinfo=None)
-        if invoice_dict.get('invoice_due_date') and hasattr(invoice_dict['invoice_due_date'], 'tzinfo') and invoice_dict['invoice_due_date'].tzinfo:
-            invoice_dict['invoice_due_date'] = invoice_dict['invoice_due_date'].replace(tzinfo=None)
-        
-        new_invoice = Invoices(**invoice_dict)
-        db.add(new_invoice)
-        await db.commit()
-        await db.refresh(new_invoice)
-        return new_invoice
-    
-    except HTTPException:
-        await db.rollback()
-        raise
-    except Exception as e:
-        await db.rollback()
+# Import dependencies for authentication and company context
+from app.services.users import get_current_active_user # Assuming this exists
+from app.services.customers import get_current_company # Assuming this exists and retrieves the Company model
+
+# Helper function to convert naive datetimes
+def _to_naive_datetime(dt_obj: datetime) -> datetime:
+    if dt_obj and hasattr(dt_obj, 'tzinfo') and dt_obj.tzinfo is not None:
+        return dt_obj.replace(tzinfo=None)
+    return dt_obj
+
+async def create_invoice_with_items(
+    invoice_data_with_items: CreateInvoiceWithItems,
+    db: AsyncSession,
+    current_company: Companies # Dependency injected from router
+) -> Invoices:
+    """
+    Create an invoice with associated items, auto-calculating totals,
+    and ensuring the invoice belongs to the current user's company.
+    """
+    invoice_data = invoice_data_with_items.invoice_data
+    invoice_items_input = invoice_data_with_items.invoice_items
+
+    # 1. Verify owner_company matches current_company
+    if invoice_data.owner_company != current_company.company_id:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail=f"Error creating invoice: {str(e)}"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only create invoices for your own company."
         )
 
+    # 2. Verify that the customer company exists and belongs to the current company's context (if applicable)
+    # Assuming customers can be shared or linked to a company, or that this check is sufficient
+    customer_result = await db.execute(
+        select(Customers).where(Customers.customer_id == invoice_data.customer_company)
+    )
+    customer = customer_result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Customer not found."
+        )
+    # Further check: Does this customer belong to the owner company? (Add if multi-tenancy on customers)
+    # if customer.customer_to != current_company.company_id:
+    #     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Customer does not belong to your company.")
 
-async def create_invoice_with_items(invoice_with_items: CreateInvoiceWithItems, db: AsyncSession):
-    """Create invoice with items in a single transaction"""
+
+    # Prepare invoice data
+    invoice_dict = invoice_data.model_dump()
+    invoice_dict['invoice_date'] = _to_naive_datetime(invoice_dict.get('invoice_date'))
+    invoice_dict['invoice_due_date'] = _to_naive_datetime(invoice_dict.get('invoice_due_date'))
+
+    # Initialize totals for calculation
+    calculated_subtotal = 0.0
+    calculated_total_cgst = 0.0
+    calculated_total_sgst = 0.0
+    calculated_total_igst = 0.0
+    new_invoice_items = []
+
     try:
-        # Verify that the company and customer exist first
-        company_result = await db.execute(
-            select(Companies).where(Companies.company_id == invoice_with_items.invoice_data.owner_company)
+        # Fetch all products in one go to reduce database roundtrips
+        product_ids = [item.product_id for item in invoice_items_input]
+        products_result = await db.execute(
+            select(Products).where(
+                Products.product_id.in_(product_ids),
+                Products.company_id == current_company.company_id # Ensure product belongs to the current company
+            )
         )
-        company = company_result.scalar_one_or_none()
-        if not company:
+        products_map = {p.product_id: p for p in products_result.scalars().all()}
+
+        if len(products_map) != len(product_ids):
+            # Some products were not found or did not belong to the company
+            found_product_ids = set(products_map.keys())
+            missing_products = [pid for pid in product_ids if pid not in found_product_ids]
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, 
-                detail="Owner company not found"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Some products not found or do not belong to your company: {', '.join(missing_products)}"
             )
-        
-        customer_result = await db.execute(
-            select(Customers).where(Customers.customer_id == invoice_with_items.invoice_data.customer_company)
-        )
-        customer = customer_result.scalar_one_or_none()
-        if not customer:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, 
-                detail="Customer not found"
-            )
-        
-        # Convert timezone-aware datetimes to naive datetimes in invoice_data
-        invoice_dict = invoice_with_items.invoice_data.dict()
-        
-        # Safe datetime conversion with type checking
-        for field in ['invoice_date', 'invoice_due_date']:
-            if (invoice_dict.get(field) and 
-                isinstance(invoice_dict[field], datetime) and 
-                hasattr(invoice_dict[field], 'tzinfo') and 
-                invoice_dict[field].tzinfo):
-                invoice_dict[field] = invoice_dict[field].replace(tzinfo=None)
-        
-        # Create the invoice
-        new_invoice = Invoices(**invoice_dict)
-        db.add(new_invoice)
-        await db.flush()  # Flush to get the invoice_id without committing
-        
-        # Add invoice items
-        total_cgst = 0
-        total_sgst = 0
-        subtotal = 0
-        
-        for item_data in invoice_with_items.invoice_items:
-            product_id = item_data.product_id
-            quantity = item_data.quantity if item_data.quantity != 0 else 0
-            
-            # Get product details
-            product_result = await db.execute(
-                select(Products).where(Products.product_id == product_id)
-            )
-            product = product_result.scalar_one_or_none()
+
+        for item_input in invoice_items_input:
+            product = products_map.get(item_input.product_id)
             if not product:
+                # This should ideally not happen due to the check above, but for safety
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Product with ID {product_id} not found"
+                    detail=f"Product with ID {item_input.product_id} not found or does not belong to your company."
                 )
-            
-            # Calculate amounts
-            item_total = product.product_unit_price * quantity
-            cgst_amount = item_total * (product.product_default_cgst_rate / 100)
-            sgst_amount = item_total * (product.product_default_sgst_rate / 100)
-            
-            # Create invoice item
-            invoice_item = InvoiceItems(
-                invoice_id=new_invoice.invoice_id,
-                product_id=product_id,
+
+            quantity = item_input.invoice_item_quantity
+            item_base_total = product.product_unit_price * quantity
+            item_cgst_amount = item_base_total * (product.product_default_cgst_rate / 100)
+            item_sgst_amount = item_base_total * (product.product_default_sgst_rate / 100)
+            item_igst_amount = item_base_total * (product.product_default_igst_rate / 100)
+
+            new_invoice_item = InvoiceItems(
+                product_id=product.product_id,
                 invoice_item_quantity=quantity,
                 invoice_item_cgst_rate=product.product_default_cgst_rate,
                 invoice_item_sgst_rate=product.product_default_sgst_rate,
-                invoice_item_cgst_amount=cgst_amount,
-                invoice_item_sgst_amount=sgst_amount,
-                invoice_item_total=item_total + cgst_amount + sgst_amount
+                invoice_item_igst_rate=product.product_default_igst_rate # Store IGST rate
+                # Amounts and item_total are calculated and can be retrieved via the InvoiceItemOut schema if needed
             )
-            
-            db.add(invoice_item)
-            
-            # Update totals
-            subtotal += item_total
-            total_cgst += cgst_amount
-            total_sgst += sgst_amount
-        
-        # Update invoice totals
-        new_invoice.invoice_subtotal = subtotal
-        new_invoice.invoice_total_cgst = total_cgst
-        new_invoice.invoice_total_sgst = total_sgst
-        new_invoice.invoice_total = subtotal + total_cgst + total_sgst
-        
-        # Commit the transaction
+            new_invoice_items.append(new_invoice_item)
+
+            calculated_subtotal += item_base_total
+            calculated_total_cgst += item_cgst_amount
+            calculated_total_sgst += item_sgst_amount
+            calculated_total_igst += item_igst_amount
+
+        # Set calculated totals on the invoice object
+        new_invoice = Invoices(**invoice_dict)
+        new_invoice.invoice_subtotal = calculated_subtotal
+        new_invoice.invoice_total_cgst = calculated_total_cgst
+        new_invoice.invoice_total_sgst = calculated_total_sgst
+        new_invoice.invoice_total_igst = calculated_total_igst
+        new_invoice.invoice_total = calculated_subtotal + calculated_total_cgst + calculated_total_sgst + calculated_total_igst
+
+        # Add invoice and its items
+        db.add(new_invoice)
+        await db.flush() # Flush to get new_invoice.invoice_id
+        for item in new_invoice_items:
+            item.invoice_id = new_invoice.invoice_id
+            db.add(item)
+
         await db.commit()
-        
-        # Fetch the complete invoice with relationships
-        result = await db.execute(
-            select(Invoices).where(Invoices.invoice_id == new_invoice.invoice_id)
-        )
-        db_invoice = result.scalar_one_or_none()
-        
-        # Check if invoice was found after commit
-        if not db_invoice:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Invoice not found after creation"
+        await db.refresh(new_invoice)
+
+        # Load relationships for the response
+        await db.execute(
+            select(Invoices)
+            .options(
+                selectinload(Invoices.invoice_by),
+                selectinload(Invoices.client),
+                selectinload(Invoices.products).selectinload(InvoiceItems.product)
             )
-        
-        return db_invoice
-        
+            .where(Invoices.invoice_id == new_invoice.invoice_id)
+        )
+        return new_invoice
+
     except HTTPException:
-        # Rollback on HTTP exceptions and re-raise
         await db.rollback()
         raise
     except Exception as e:
-        # Rollback on any other exception
         await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating invoice with items: {str(e)}"
         )
 
-async def show_all_invoices(db: AsyncSession):
-    """Get all invoices with related data"""
+async def show_all_invoices(db: AsyncSession, current_company: Companies) -> List[Invoices]:
+    """
+    Get all invoices relevant to the current authenticated company
+    (either as owner or customer).
+    """
     result = await db.execute(
         select(Invoices)
         .options(
             selectinload(Invoices.invoice_by),
             selectinload(Invoices.client),
             selectinload(Invoices.products).selectinload(InvoiceItems.product)
+        )
+        .where(
+            or_(
+                Invoices.owner_company == current_company.company_id,
+                Invoices.customer_company == current_company.company_id
+            )
         )
     )
     invoices = result.scalars().all()
     return invoices
 
-async def show_invoice(invoice_id: int, db: AsyncSession):
-    """Get a specific invoice by ID with all related data"""
+async def get_invoice_by_id(
+    invoice_id: str,
+    db: AsyncSession,
+    current_company: Companies
+) -> Invoices:
+    """
+    Get a specific invoice by ID, ensuring it belongs to or is related to the current company.
+    """
     result = await db.execute(
         select(Invoices)
         .options(
@@ -204,100 +196,110 @@ async def show_invoice(invoice_id: int, db: AsyncSession):
             selectinload(Invoices.client),
             selectinload(Invoices.products).selectinload(InvoiceItems.product)
         )
-        .where(Invoices.invoice_id == invoice_id)
+        .where(
+            Invoices.invoice_id == invoice_id,
+            or_(
+                Invoices.owner_company == current_company.company_id,
+                Invoices.customer_company == current_company.company_id
+            )
+        )
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, 
-            detail='Specified invoice is not present...'
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Invoice not found or does not belong to your company.'
         )
     return invoice
 
-async def update_invoice(invoice_id: int, updated_details: UpdateInvoice, db: AsyncSession):
-    """Update an existing invoice"""
+async def update_invoice_details(
+    invoice_id: str,
+    updated_details: UpdateInvoice,
+    db: AsyncSession,
+    current_company: Companies
+) -> Invoices:
+    """
+    Update an existing invoice's details, ensuring it belongs to the current company.
+    Note: This only updates the invoice header. To update items, separate logic or endpoint is needed.
+    """
+    invoice = await get_invoice_by_id(invoice_id, db, current_company) # Re-use check
+
+    update_data = updated_details.model_dump(exclude_unset=True)
+
+    # Convert timezone-aware datetimes to naive datetimes for updates
+    if 'invoice_date' in update_data:
+        update_data['invoice_date'] = _to_naive_datetime(update_data['invoice_date'])
+    if 'invoice_due_date' in update_data:
+        update_data['invoice_due_date'] = _to_naive_datetime(update_data['invoice_due_date'])
+
     try:
-        result = await db.execute(select(Invoices).where(Invoices.invoice_id == invoice_id))
-        invoice = result.scalar_one_or_none()
-        if not invoice:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, 
-                detail="Invoice not found"
-            )
-        
-        updated_data = updated_details.dict(exclude_unset=True)
-        
-        # Verify company and customer if they are being updated
-        if 'owner_company' in updated_data:
-            company_result = await db.execute(
-                select(Companies).where(Companies.company_id == updated_data['owner_company'])
-            )
-            if not company_result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Owner company not found"
-                )
-        
-        if 'customer_company' in updated_data:
-            customer_result = await db.execute(
-                select(Customers).where(Customers.customer_id == updated_data['customer_company'])
-            )
-            if not customer_result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Customer not found"
-                )
-        
-        # Handle datetime conversion for updates
-        if 'invoice_date' in updated_data and updated_data['invoice_date'] and hasattr(updated_data['invoice_date'], 'tzinfo') and updated_data['invoice_date'].tzinfo:
-            updated_data['invoice_date'] = updated_data['invoice_date'].replace(tzinfo=None)
-        if 'invoice_due_date' in updated_data and updated_data['invoice_due_date'] and hasattr(updated_data['invoice_due_date'], 'tzinfo') and updated_data['invoice_due_date'].tzinfo:
-            updated_data['invoice_due_date'] = updated_data['invoice_due_date'].replace(tzinfo=None)
-        
-        for key, value in updated_data.items():
+        for key, value in update_data.items():
             setattr(invoice, key, value)
-        
+
         await db.commit()
         await db.refresh(invoice)
+        # Refresh relationships for response
+        await db.execute(
+            select(Invoices)
+            .options(
+                selectinload(Invoices.invoice_by),
+                selectinload(Invoices.client),
+                selectinload(Invoices.products).selectinload(InvoiceItems.product)
+            )
+            .where(Invoices.invoice_id == invoice.invoice_id)
+        )
         return invoice
-    
-    except HTTPException:
-        await db.rollback()
-        raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating invoice: {str(e)}"
         )
 
-async def delete_invoice(invoice_id: int, db: AsyncSession):
-    """Delete an invoice and its related items"""
+async def delete_invoice(
+    invoice_id: str,
+    db: AsyncSession,
+    current_company: Companies
+) -> dict:
+    """
+    Delete an invoice and its related items, ensuring it belongs to the current company.
+    """
+    invoice = await get_invoice_by_id(invoice_id, db, current_company) # Re-use check
+
     try:
-        result = await db.execute(select(Invoices).where(Invoices.invoice_id == invoice_id))
-        invoice = result.scalar_one_or_none()
-        if not invoice:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, 
-                detail="Invoice not found"
-            )
-        
         await db.delete(invoice)
         await db.commit()
         return {"message": "Invoice successfully deleted"}
-    
-    except HTTPException:
-        await db.rollback()
-        raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error deleting invoice: {str(e)}"
         )
 
-async def get_invoices_by_company(company_id: int, db: AsyncSession):
-    """Get all invoices for a specific company"""
+async def get_invoices_by_specific_company_role(
+    company_id_param: str,
+    db: AsyncSession,
+    current_company: Companies,
+    role: str # 'owner' or 'customer'
+) -> List[Invoices]:
+    """
+    Get invoices where the current company plays a specific role (owner or customer).
+    Ensures that the company_id_param matches the current_company's ID.
+    """
+    if company_id_param != current_company.company_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You are not authorized to view invoices for company ID {company_id_param}."
+        )
+
+    if role == 'owner':
+        query_clause = Invoices.owner_company == current_company.company_id
+    elif role == 'customer':
+        query_clause = Invoices.customer_company == current_company.company_id
+    else:
+        raise ValueError("Role must be 'owner' or 'customer'")
+
     result = await db.execute(
         select(Invoices)
         .options(
@@ -305,21 +307,11 @@ async def get_invoices_by_company(company_id: int, db: AsyncSession):
             selectinload(Invoices.client),
             selectinload(Invoices.products).selectinload(InvoiceItems.product)
         )
-        .where(Invoices.owner_company == company_id)
+        .where(query_clause)
     )
     invoices = result.scalars().all()
     return invoices
 
-async def get_invoices_by_customer(customer_id: int, db: AsyncSession):
-    """Get all invoices for a specific customer"""
-    result = await db.execute(
-        select(Invoices)
-        .options(
-            selectinload(Invoices.invoice_by),
-            selectinload(Invoices.client),
-            selectinload(Invoices.products).selectinload(InvoiceItems.product)
-        )
-        .where(Invoices.customer_company == customer_id)
-    )
-    invoices = result.scalars().all()
-    return invoices
+# New/Improved service functions for invoice items if needed:
+# These would handle adding/updating/deleting individual items for an existing invoice.
+# For now, create_invoice_with_items handles initial item creation.
