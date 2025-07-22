@@ -3,7 +3,6 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
 
-# Assuming app.schemas.products exists and has ProductOut
 from app.schemas.products import ProductOut
 
 class InvoiceItemOut(BaseModel):

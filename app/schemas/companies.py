@@ -18,6 +18,8 @@ class CreateCompany(BaseModel):
     company_owner: str # Changed to str for UUID
     company_name: str
     company_address: str
+    company_city: str
+    company_state: str
     company_gstin: Optional[str] = None
     company_msme: Optional[str] = None
     company_email: EmailStr
@@ -35,6 +37,8 @@ class UpdateCompany(BaseModel): # Changed from inheriting CreateCompany to allow
     company_owner: Optional[str] = None
     company_name: Optional[str] = None
     company_address: Optional[str] = None
+    company_city: Optional[str] = None
+    company_state: Optional[str] = None
     company_gstin: Optional[str] = None
     company_msme: Optional[str] = None
     company_email: Optional[EmailStr] = None
@@ -53,6 +57,8 @@ class CompanyOut(BaseModel):
     company_owner: str # Changed to str for UUID
     company_name: str
     company_address: str
+    company_city: str
+    company_state: str
     company_gstin: Optional[str] = None
     company_msme: Optional[str] = None
     company_email: EmailStr

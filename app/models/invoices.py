@@ -4,20 +4,13 @@ from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Float, func
 from datetime import datetime
 from sqlalchemy.orm import relationship
 import uuid
-# Import the Customers model
-from app.models.customers import Customers # <--- ADD THIS IMPORT
 
 class Invoices(Base):
     __tablename__ = 'invoices'
 
     invoice_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
     owner_company = Column(String(36), ForeignKey('companies.company_id', ondelete='CASCADE'), nullable=False)
-
-    # Foreign key for the customer (from the Customers model) that receives the invoice
-    # *** CHANGE THIS LINE ***
-    # From: customer_company = Column(String(36), ForeignKey('customers.customer_id', ondelete='CASCADE'), nullable=False)
-    # To:
-    customer_company = Column(String(36), ForeignKey(Customers.customer_id, ondelete='CASCADE'), nullable=False)
+    customer_company = Column(String(36), ForeignKey('customers.customer_id', ondelete='CASCADE'), nullable=False)
 
     invoice_number = Column(String(100), nullable=False)
     invoice_date = Column(DateTime, default=datetime.utcnow)
@@ -32,6 +25,10 @@ class Invoices(Base):
     invoice_total_igst = Column(Float, nullable=False, default=0.0)
     invoice_total = Column(Float, nullable=False, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # New fields for production standard
+    invoice_status = Column(String(50), nullable=False, default="pending") # e.g., "pending", "paid", "partially paid", "cancelled"
+    user_reference_notes = Column(Text, nullable=True) # Internal notes for user reference, not for invoice form
 
     # Relationships:
     owner_company_rel = relationship(
@@ -52,5 +49,5 @@ class Invoices(Base):
         'InvoiceItems',
         back_populates='invoice',
         lazy='selectin',
-        cascade="all, delete-orphan"
+        cascade='all, delete-orphan' # Ensure items are deleted with invoice
     )

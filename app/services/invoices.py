@@ -1,4 +1,5 @@
 # app/services/invoices.py
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_
 from sqlalchemy.orm import selectinload
@@ -14,7 +15,7 @@ from typing import List, Union
 
 # Import dependencies for authentication and company context
 from app.services.users import get_current_active_user # Assuming this exists
-from app.services.customers import get_current_company # Assuming this exists and retrieves the Company model
+# from app.services.customers import get_current_company # This is typically handled by a FastAPI Depends in the router, not imported here for direct use.
 
 # Helper function to convert naive datetimes
 def _to_naive_datetime(dt_obj: datetime) -> datetime:
@@ -31,12 +32,9 @@ async def create_invoice_with_items(
     Create an invoice with associated items, auto-calculating totals,
     and ensuring the invoice belongs to the current user's company.
     """
-    # CORRECTED LINE: Use invoice_data_with_items directly as the invoice data
-    # Removed: invoice_data = invoice_data_with_items.invoice_data
     invoice_items_input = invoice_data_with_items.invoice_items
 
     # 1. Verify owner_company matches current_company
-    # CORRECTED LINE: Use invoice_data_with_items for owner_company
     if invoice_data_with_items.owner_company != current_company.company_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -44,9 +42,7 @@ async def create_invoice_with_items(
         )
 
     # 2. Verify that the customer company exists and belongs to the current company's context (if applicable)
-    # Assuming customers can be shared or linked to a company, or that this check is sufficient
     customer_result = await db.execute(
-        # CORRECTED LINE: Use invoice_data_with_items for customer_company
         select(Customers).where(Customers.customer_id == invoice_data_with_items.customer_company)
     )
     customer = customer_result.scalar_one_or_none()
@@ -55,14 +51,12 @@ async def create_invoice_with_items(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Customer not found."
         )
-    # Further check: Does this customer belong to the owner company? (Add if multi-tenancy on customers)
-    # if customer.customer_to != current_company.company_id:
-    #     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Customer does not belong to your company.")
 
+    # Determine if it's an intrastate or interstate transaction
+    is_intrastate = (customer.customer_state == current_company.company_state)
 
-    # Prepare invoice data
-    # CORRECTED LINE: Use invoice_data_with_items directly for dict
-    invoice_dict = invoice_data_with_items.dict(exclude={'invoice_items'}) # Exclude the nested items
+    # Prepare invoice data (exclude items from the initial dict creation)
+    invoice_dict = invoice_data_with_items.dict(exclude={'invoice_items'})
     invoice_dict['invoice_date'] = _to_naive_datetime(invoice_dict.get('invoice_date'))
     invoice_dict['invoice_due_date'] = _to_naive_datetime(invoice_dict.get('invoice_due_date'))
 
@@ -85,7 +79,6 @@ async def create_invoice_with_items(
         products_map = {p.product_id: p for p in products_result.scalars().all()}
 
         if len(products_map) != len(product_ids):
-            # Some products were not found or did not belong to the company
             found_product_ids = set(products_map.keys())
             missing_products = [pid for pid in product_ids if pid not in found_product_ids]
             raise HTTPException(
@@ -96,7 +89,6 @@ async def create_invoice_with_items(
         for item_input in invoice_items_input:
             product = products_map.get(item_input.product_id)
             if not product:
-                # This should ideally not happen due to the check above, but for safety
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Product with ID {item_input.product_id} not found or does not belong to your company."
@@ -104,17 +96,29 @@ async def create_invoice_with_items(
 
             quantity = item_input.invoice_item_quantity
             item_base_total = product.product_unit_price * quantity
-            item_cgst_amount = item_base_total * (product.product_default_cgst_rate / 100)
-            item_sgst_amount = item_base_total * (product.product_default_sgst_rate / 100)
-            item_igst_amount = item_base_total * (product.product_default_igst_rate / 100)
+
+            item_cgst_amount = 0.0
+            item_sgst_amount = 0.0
+            item_igst_amount = 0.0
+            item_cgst_rate_to_store = 0.0
+            item_sgst_rate_to_store = 0.0
+            item_igst_rate_to_store = 0.0
+
+            if is_intrastate:
+                item_cgst_rate_to_store = product.product_default_cgst_rate
+                item_sgst_rate_to_store = product.product_default_sgst_rate
+                item_cgst_amount = (item_base_total * item_cgst_rate_to_store) / 100
+                item_sgst_amount = (item_base_total * item_sgst_rate_to_store) / 100
+            else:
+                item_igst_rate_to_store = product.product_default_igst_rate
+                item_igst_amount = (item_base_total * item_igst_rate_to_store) / 100
 
             new_invoice_item = InvoiceItems(
                 product_id=product.product_id,
                 invoice_item_quantity=quantity,
-                invoice_item_cgst_rate=product.product_default_cgst_rate,
-                invoice_item_sgst_rate=product.product_default_sgst_rate,
-                invoice_item_igst_rate=product.product_default_igst_rate # Store IGST rate
-                # Amounts and item_total are calculated and can be retrieved via the InvoiceItemOut schema if needed
+                invoice_item_cgst_rate=item_cgst_rate_to_store,
+                invoice_item_sgst_rate=item_sgst_rate_to_store,
+                invoice_item_igst_rate=item_igst_rate_to_store,
             )
             new_invoice_items.append(new_invoice_item)
 
@@ -123,13 +127,17 @@ async def create_invoice_with_items(
             calculated_total_sgst += item_sgst_amount
             calculated_total_igst += item_igst_amount
 
-        # Set calculated totals on the invoice object
+        # Set calculated totals and new fields on the invoice object
         new_invoice = Invoices(**invoice_dict)
         new_invoice.invoice_subtotal = calculated_subtotal
         new_invoice.invoice_total_cgst = calculated_total_cgst
         new_invoice.invoice_total_sgst = calculated_total_sgst
         new_invoice.invoice_total_igst = calculated_total_igst
         new_invoice.invoice_total = calculated_subtotal + calculated_total_cgst + calculated_total_sgst + calculated_total_igst
+
+        # New fields from CreateInvoiceWithItems
+        new_invoice.invoice_status = invoice_data_with_items.invoice_status
+        new_invoice.user_reference_notes = invoice_data_with_items.user_reference_notes
 
         # Add invoice and its items
         db.add(new_invoice)
@@ -315,7 +323,3 @@ async def get_invoices_by_specific_company_role(
     )
     invoices = result.scalars().all()
     return invoices
-
-# New/Improved service functions for invoice items if needed:
-# These would handle adding/updating/deleting individual items for an existing invoice.
-# For now, create_invoice_with_items handles initial item creation.

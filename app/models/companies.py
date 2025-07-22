@@ -13,6 +13,8 @@ class Companies(Base):
     company_owner = Column(String(36), ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
     company_name = Column(String, nullable=False)
     company_address = Column(Text, nullable=False)
+    company_city = Column(String, nullable=False)
+    company_state = Column(String, nullable=False)
     company_gstin = Column(String, nullable=False, unique=True, default=None)
     company_msme = Column(String, nullable=True, default=None)
     company_email = Column(String, nullable=False)
