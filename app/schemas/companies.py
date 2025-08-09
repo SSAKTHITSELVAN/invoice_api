@@ -23,6 +23,7 @@ class CreateCompany(BaseModel):
     company_gstin: Optional[str] = None
     company_msme: Optional[str] = None
     company_email: EmailStr
+    company_logo: Optional[str] = None  # New field for logo URL
     company_bank_account_no: str
     company_bank_name: str
     company_account_holder: str
@@ -42,6 +43,7 @@ class UpdateCompany(BaseModel): # Changed from inheriting CreateCompany to allow
     company_gstin: Optional[str] = None
     company_msme: Optional[str] = None
     company_email: Optional[EmailStr] = None
+    company_logo: Optional[str] = None  # New field for logo URL
     company_bank_account_no: Optional[str] = None
     company_bank_name: Optional[str] = None
     company_account_holder: Optional[str] = None
@@ -62,6 +64,7 @@ class CompanyOut(BaseModel):
     company_gstin: Optional[str] = None
     company_msme: Optional[str] = None
     company_email: EmailStr
+    company_logo: Optional[str] = None  # New field for logo URL
     company_bank_account_no: str
     company_bank_name: str
     company_account_holder: str

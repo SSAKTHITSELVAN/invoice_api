@@ -1,7 +1,7 @@
 # app/services/invoices.py
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_
+from sqlalchemy import select, or_, and_, delete
 from sqlalchemy.orm import selectinload
 from app.models.invoices import Invoices
 from app.models.invoice_items import InvoiceItems
@@ -224,6 +224,55 @@ async def get_invoice_by_id(
         )
     return invoice
 
+async def _recalculate_invoice_totals(
+    invoice: Invoices, 
+    db: AsyncSession, 
+    current_company: Companies
+) -> None:
+    """
+    Recalculate invoice totals based on current items.
+    """
+    # Get customer to determine if intrastate or interstate
+    customer_result = await db.execute(
+        select(Customers).where(Customers.customer_id == invoice.customer_company)
+    )
+    customer = customer_result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Customer not found."
+        )
+
+    is_intrastate = (customer.customer_state == current_company.company_state)
+
+    # Initialize totals
+    calculated_subtotal = 0.0
+    calculated_total_cgst = 0.0
+    calculated_total_sgst = 0.0
+    calculated_total_igst = 0.0
+
+    # Calculate totals from invoice items
+    for item in invoice.invoice_items:
+        item_base_total = item.product.product_unit_price * item.invoice_item_quantity
+        
+        if is_intrastate:
+            item_cgst_amount = (item_base_total * item.invoice_item_cgst_rate) / 100
+            item_sgst_amount = (item_base_total * item.invoice_item_sgst_rate) / 100
+            calculated_total_cgst += item_cgst_amount
+            calculated_total_sgst += item_sgst_amount
+        else:
+            item_igst_amount = (item_base_total * item.invoice_item_igst_rate) / 100
+            calculated_total_igst += item_igst_amount
+
+        calculated_subtotal += item_base_total
+
+    # Update invoice totals
+    invoice.invoice_subtotal = calculated_subtotal
+    invoice.invoice_total_cgst = calculated_total_cgst
+    invoice.invoice_total_sgst = calculated_total_sgst
+    invoice.invoice_total_igst = calculated_total_igst
+    invoice.invoice_total = calculated_subtotal + calculated_total_cgst + calculated_total_sgst + calculated_total_igst
+
 async def update_invoice_details(
     invoice_id: str,
     updated_details: UpdateInvoice,
@@ -231,12 +280,19 @@ async def update_invoice_details(
     current_company: Companies
 ) -> Invoices:
     """
-    Update an existing invoice's details, ensuring it belongs to the current company.
-    Note: This only updates the invoice header. To update items, separate logic or endpoint is needed.
+    Update an existing invoice's details and optionally its items,
+    ensuring it belongs to the current company.
     """
-    invoice = await get_invoice_by_id(invoice_id, db, current_company) # Re-use check
+    invoice = await get_invoice_by_id(invoice_id, db, current_company)
 
-    update_data = updated_details.dict(exclude_unset=True)
+    # Verify the invoice belongs to the current company as owner (only owners can update)
+    if invoice.owner_company != current_company.company_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only update invoices that your company owns."
+        )
+
+    update_data = updated_details.dict(exclude_unset=True, exclude={'invoice_items'})
 
     # Convert timezone-aware datetimes to naive datetimes for updates
     if 'invoice_date' in update_data:
@@ -245,13 +301,94 @@ async def update_invoice_details(
         update_data['invoice_due_date'] = _to_naive_datetime(update_data['invoice_due_date'])
 
     try:
+        # Update invoice header fields
         for key, value in update_data.items():
             setattr(invoice, key, value)
 
+        # Handle invoice items update if provided
+        if updated_details.invoice_items is not None:
+            # Delete existing items
+            await db.execute(
+                delete(InvoiceItems).where(InvoiceItems.invoice_id == invoice_id)
+            )
+            await db.flush()
+
+            # Get customer to determine tax calculation
+            customer_result = await db.execute(
+                select(Customers).where(Customers.customer_id == invoice.customer_company)
+            )
+            customer = customer_result.scalar_one_or_none()
+            if not customer:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Customer not found."
+                )
+
+            is_intrastate = (customer.customer_state == current_company.company_state)
+
+            # Fetch all products for the new items
+            product_ids = [item.product_id for item in updated_details.invoice_items]
+            products_result = await db.execute(
+                select(Products).where(
+                    Products.product_id.in_(product_ids),
+                    Products.company_id == current_company.company_id
+                )
+            )
+            products_map = {p.product_id: p for p in products_result.scalars().all()}
+
+            if len(products_map) != len(product_ids):
+                found_product_ids = set(products_map.keys())
+                missing_products = [pid for pid in product_ids if pid not in found_product_ids]
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Some products not found or do not belong to your company: {', '.join(missing_products)}"
+                )
+
+            # Create new items
+            new_invoice_items = []
+            for item_input in updated_details.invoice_items:
+                product = products_map.get(item_input.product_id)
+                if not product:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Product with ID {item_input.product_id} not found."
+                    )
+
+                # Calculate tax rates based on transaction type
+                item_cgst_rate_to_store = 0.0
+                item_sgst_rate_to_store = 0.0
+                item_igst_rate_to_store = 0.0
+
+                if is_intrastate:
+                    item_cgst_rate_to_store = product.product_default_cgst_rate
+                    item_sgst_rate_to_store = product.product_default_sgst_rate
+                else:
+                    item_igst_rate_to_store = product.product_default_igst_rate
+
+                new_invoice_item = InvoiceItems(
+                    invoice_id=invoice_id,
+                    product_id=product.product_id,
+                    invoice_item_quantity=item_input.invoice_item_quantity,
+                    invoice_item_cgst_rate=item_cgst_rate_to_store,
+                    invoice_item_sgst_rate=item_sgst_rate_to_store,
+                    invoice_item_igst_rate=item_igst_rate_to_store,
+                )
+                new_invoice_items.append(new_invoice_item)
+                db.add(new_invoice_item)
+
+            await db.flush()
+
+            # Refresh the invoice to get the new items
+            await db.refresh(invoice)
+
+            # Recalculate totals
+            await _recalculate_invoice_totals(invoice, db, current_company)
+
         await db.commit()
         await db.refresh(invoice)
-        # Refresh relationships for response
-        await db.execute(
+        
+        # Load relationships for response
+        result = await db.execute(
             select(Invoices)
             .options(
                 selectinload(Invoices.owner_company_rel),
@@ -260,7 +397,11 @@ async def update_invoice_details(
             )
             .where(Invoices.invoice_id == invoice.invoice_id)
         )
-        return invoice
+        return result.scalar_one()
+
+    except HTTPException:
+        await db.rollback()
+        raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(
@@ -276,7 +417,7 @@ async def delete_invoice(
     """
     Delete an invoice and its related items, ensuring it belongs to the current company.
     """
-    invoice = await get_invoice_by_id(invoice_id, db, current_company) # Re-use check
+    invoice = await get_invoice_by_id(invoice_id, db, current_company)
 
     try:
         await db.delete(invoice)

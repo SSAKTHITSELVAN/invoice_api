@@ -38,6 +38,7 @@ async def create_company_endpoint(
             company_gstin=new_company.company_gstin,
             company_msme=new_company.company_msme,
             company_email=new_company.company_email,
+            company_logo=new_company.company_logo,  # New field for logo URL
             company_bank_account_no=new_company.company_bank_account_no,
             company_bank_name=new_company.company_bank_name,
             company_account_holder=new_company.company_account_holder,
@@ -85,6 +86,7 @@ async def get_companies_endpoint(
             company_gstin=c.company_gstin,
             company_msme=c.company_msme,
             company_email=c.company_email,
+            company_logo=c.company_logo,  # New field for logo URL
             company_bank_account_no=c.company_bank_account_no,
             company_bank_name=c.company_bank_name,
             company_account_holder=c.company_account_holder,
@@ -126,6 +128,7 @@ async def get_single_company_endpoint(
             company_gstin=company.company_gstin,
             company_msme=company.company_msme,
             company_email=company.company_email,
+            company_logo=company.company_logo,  # New field for logo URL
             company_bank_account_no=company.company_bank_account_no,
             company_bank_name=company.company_bank_name,
             company_account_holder=company.company_account_holder,
@@ -161,6 +164,7 @@ async def update_company_details_endpoint(
             company_gstin=updated_company.company_gstin,
             company_msme=updated_company.company_msme,
             company_email=updated_company.company_email,
+            company_logo=updated_company.company_logo,  # New field for logo URL
             company_bank_account_no=updated_company.company_bank_account_no,
             company_bank_name=updated_company.company_bank_name,
             company_account_holder=updated_company.company_account_holder,

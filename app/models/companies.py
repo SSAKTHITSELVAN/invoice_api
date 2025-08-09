@@ -18,6 +18,7 @@ class Companies(Base):
     company_gstin = Column(String, nullable=False, unique=True, default=None)
     company_msme = Column(String, nullable=True, default=None)
     company_email = Column(String, nullable=False)
+    company_logo = Column(String, nullable=True, default=None)  # New column for logo URL
     company_bank_account_no = Column(String, nullable=False)
     company_bank_name = Column(String, nullable=False)
     company_account_holder = Column(String, nullable=False)
